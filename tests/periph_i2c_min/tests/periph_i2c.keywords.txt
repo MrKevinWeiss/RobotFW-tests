@@ -1,0 +1,13 @@
+*** Settings ***
+Library             I2Cdevice  port=%{PORT}
+
+Resource            api_shell.keywords.txt
+Resource            philip.keywords.txt
+
+*** Keywords ***
+I2C Write Bytes To Register Should Succeed
+    [Documentation]             Verify bytes are written to a register.
+    [Arguments]                 ${reg}  ${data}  ${len}
+    API Call Should Succeed     I2C Write Regs   reg=${reg}  data=${data}
+    API Call Should Succeed     PHiLIP.Read Reg  user_reg    size=${len}
+    Should Be Equal             ${RESULT['data']}  ${data}
