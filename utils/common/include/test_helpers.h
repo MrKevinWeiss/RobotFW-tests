@@ -23,6 +23,14 @@
 #ifndef TEST_HELPERS_H
 #define TEST_HELPERS_H
 
+#ifndef SHELL_EVENT_BUF
+#define SHELL_EVENT_BUF 64
+#endif
+
+#define SHELL_READLINE_HOOK_EVENT   1
+#define SHELL_PRE_CMD_HOOK_EVENT    2
+#define SHELL_POST_CMD_HOOK_EVENT   127
+
 #ifdef JSON_SHELL_PARSER
 /**
  * @name    JSON_SHELL_PARSER states

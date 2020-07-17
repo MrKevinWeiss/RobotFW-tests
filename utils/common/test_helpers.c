@@ -23,7 +23,31 @@
 #include <assert.h>
 #include <inttypes.h>
 
+#include "shell.h"
+#include "xtimer.h"
+#include "irq_arch.h"
+#include "trace.h"
+
 #include "test_helpers.h"
+#include "periph/gpio.h"
+
+
+void post_readline_hook(void) {
+    trace(SHELL_READLINE_HOOK_EVENT);
+}
+
+void pre_command_hook(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    trace(SHELL_PRE_CMD_HOOK_EVENT);
+}
+
+void post_command_hook(int ret, int argc, char **argv) {
+    (void)ret;
+    (void)argc;
+    (void)argv;
+    trace(SHELL_POST_CMD_HOOK_EVENT);
+}
 
 #ifdef JSON_SHELL_PARSER
 static int parser_state[NUM_OF_JSON_SHELL_PARSER] = {0};

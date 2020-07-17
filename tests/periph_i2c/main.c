@@ -27,6 +27,8 @@
 #include "periph/i2c.h"
 #include "shell.h"
 
+#include "trace.h"
+#include "test_helpers.h"
 #include "sc_args.h"
 
 #ifndef I2C_ACK
@@ -101,7 +103,9 @@ int cmd_i2c_acquire(int argc, char **argv)
         return -ENODEV;
     }
     printf("Command: i2c_acquire(%i)\n", dev);
+    trace(4);
     res = i2c_acquire(dev);
+    trace(5);
     if (res == I2C_ACK) {
         printf("Success: i2c_%i acquired\n", dev);
         return 0;
@@ -154,7 +158,6 @@ int cmd_i2c_read_reg(int argc, char **argv)
            dev, addr, reg, flags);
     uint8_t data;
     res = i2c_read_reg(dev, addr, reg, &data, flags);
-
     if (res == I2C_ACK) {
         _print_i2c_read(dev, &reg, &data, 1);
         return 0;
@@ -342,8 +345,9 @@ int cmd_i2c_write_bytes(int argc, char **argv)
         printf("0x%02x", i2c_buf[i]);
     }
     puts("])");
+    trace(6);
     res = i2c_write_bytes(dev, addr, i2c_buf, len, flags);
-
+    trace(7);
     if (res == I2C_ACK) {
         printf("Success: i2c_%i wrote %i bytes\n", dev, len);
         return 0;
@@ -454,6 +458,14 @@ int cmd_get_metadata(int argc, char **argv)
     return 0;
 }
 
+int cmd_print_events(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    trace_table_dump(SHELL_READLINE_HOOK_EVENT);
+    return 0;
+}
+
+
 static const shell_command_t shell_commands[] = {
     { "i2c_acquire", "Get access to the I2C bus", cmd_i2c_acquire },
     { "i2c_release", "Release to the I2C bus", cmd_i2c_release },
@@ -467,6 +479,7 @@ static const shell_command_t shell_commands[] = {
     { "i2c_write_regs", "Write bytes to registers", cmd_i2c_write_regs },
     { "i2c_get_devs", "Gets amount of supported i2c devices", cmd_i2c_get_devs },
     { "get_metadata", "Get the metadata of the test firmware", cmd_get_metadata },
+    { "print_events", "Prints event stats", cmd_print_events },
     { NULL, NULL, NULL }
 };
 
