@@ -1,4 +1,8 @@
-def nodes = nodesByLabel('HIL')
+nodes = nodesByLabel('HIL')
+node_boards = []
+node_tests = []
+robot_fw_commit_id = ""
+riot_commit_id = ""
 
 pipeline {
     agent { label 'master' }
@@ -18,14 +22,23 @@ pipeline {
             steps {
                 createPipelineTriggers()
                 stepClone()
-                stash name: 'sources'
+                stash name: 'sources', useDefaultExcludes: false
+                collect_tests()
+                collect_boards()
             }
         }
+        stage('build tests') {
+            steps {
+                build_jobs()
+            }
+        }
+
         stage('node test') {
             steps {
-                runParallel items: nodes.collect { "${it}" }
+                runParallel items: node_boards.collect { "${it}" }
             }
         }
+
         stage('compile results') {
             steps {
                 step_compile_results()
@@ -75,6 +88,61 @@ void createPipelineTriggers() {
     }
 }
 
+def collect_tests() {
+    script {
+        node_tests = sh(returnStdout: true,
+                script:  """
+                            for dir in \$(find tests -maxdepth 1 -mindepth 1 -type d); do
+                                [ -d \$dir/tests ] && { echo \$dir ; } || true
+                            done
+                        """).tokenize()
+        sh script: "echo collected tests: ${node_tests.join(",")}", label: "print tests"
+    }
+}
+
+def collect_boards() {
+    script {
+        for (int i=0; i < nodes.size(); ++i) {
+            node (nodes[i]) {
+                node_boards.push(env.BOARD)
+            }
+        }
+        node_boards.unique()
+        sh script: "echo collected boards: ${node_boards.join(",")}", label: "print boards"
+    }
+}
+
+def build_job(board, test) {
+    exit_code = sh(
+        script: "BUILD_IN_DOCKER=1 BOARD=${board} make -C ${test} clean all -j",
+        returnStatus: true,
+        label: "Build BOARD=${board} TEST=${test}"
+    )
+
+    if (exit_code == 0) {
+        /* Must remove all / to get stash to work */
+        s_name = (board + "_" + test).replace("/", "_")
+        stash name: s_name, includes: "${test}/bin/${board}/*.elf,${test}/bin/${board}/*.hex,${test}/bin/${board}/*.bin"
+    }
+}
+
+def build_jobs() {
+    script {
+        node ("riot_build") {
+            deleteDir()
+            sh script: """
+                sh ${GIT_CACHE_PATH}git-cache clone https://github.com/RIOT-OS/RobotFW-tests ${robot_fw_commit_id} .
+                sh ${GIT_CACHE_PATH}git-cache clone https://github.com/RIOT-OS/RIOT ${riot_commit_id} RIOT
+            """, label: "checkout from git cache"
+            for (int t_idx=0; t_idx < node_tests.size(); t_idx++) {
+                for (int b_idx=0; b_idx < node_boards.size(); b_idx++) {
+                    build_job(node_boards[b_idx], node_tests[t_idx])
+                }
+            }
+        }
+    }
+}
+
 def step_compile_results()
 {
     /* Some hacks are needed since the master must run the script on the
@@ -88,6 +156,7 @@ def step_compile_results()
         HIL_JOB_NAME=$(echo ${JOB_NAME}| cut -d'/' -f 1)
         HIL_BRANCH_NAME=$(echo $JOB_NAME| cut -d'/' -f 2)
         HIL_BRANCH_NAME=$(echo $HIL_BRANCH_NAME | sed 's/%2F/-/g')
+        HIL_BRANCH_NAME=$(echo $HIL_BRANCH_NAME | sed 's/_/-/g')
         HIL_BRANCH_NAME=$(ls ${JENKINS_HOME}/jobs/${HIL_JOB_NAME}/branches/ | grep "^$HIL_BRANCH_NAME")
         ./dist/tools/ci/results_to_xml.sh ${JENKINS_HOME}/jobs/${HIL_JOB_NAME}/branches/${HIL_BRANCH_NAME}/builds/${BUILD_NUMBER}/archive/build/robot/
     '''
@@ -100,62 +169,78 @@ def stepClone()
     if ("${env.BRANCH_NAME}" == 'nightly') {
         // update nightly branch to latest master and push
         withCredentials([usernamePassword(credentialsId: 'da54a500-472f-4005-9399-a0ab5ce4da7e', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
-            sh("""
+            sh(script: """
                 git config --global credential.username ${GIT_USERNAME}
                 git config --global credential.helper "!echo password=${GIT_PASSWORD}; echo"
                 git pull --rebase origin master
                 git push origin HEAD:nightly
-            """)
+            """, label: "Update robot nightly branch")
         }
     }
     if ("${params.HIL_RIOT_VERSION}" == 'master') {
-        // checkout latest RIOT master
-        sh 'git submodule update --init --remote --rebase --depth 1'
+        sh script: 'git submodule update --init --remote --rebase --depth 1', label: "checkout latest RIOT master"
     }
     else {
-        sh 'git submodule update --init --depth 1'
+        sh script: 'git submodule update --init --depth 1', label: "update RIOT submodule"
         if ("${params.HIL_RIOT_VERSION}" == 'pull' && "${params.HIL_RIOT_PULL}" != '0') {
             // checkout specified PR number
             def prnum = params.HIL_RIOT_PULL.toInteger()
-            sh """
+            sh script: """
                 cd RIOT
                 git fetch origin +refs/pull/${prnum}/merge
                 git checkout FETCH_HEAD
-            """
+            """, label: "checkout RIOT PR ${prnum}"
         }
     }
+    robot_fw_commit_id = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+    riot_commit_id = sh(script: """
+            cd RIOT
+            git rev-parse HEAD
+        """, returnStdout: true).trim()
+    sh script: "echo robot_fw_commit_id " + robot_fw_commit_id, label: "robot_fw_commit_id=${robot_fw_commit_id}"
+    sh script: "echo riot_commit_id " + riot_commit_id, label: "riot_commit_id=${riot_commit_id}"
 }
 
 def stepRunNodeTests()
 {
     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-        def tests = []
         stage( "${env.BOARD} setup"){
             stepPrepareNodeWorkingDir()
-            tests = stepDiscoverTests()
+            //tests = stepDiscoverTests()
         }
-        for (int i=0; i < tests.size(); i++) {
-            stage("${tests[i]}") {
+        for (int i=0; i < node_tests.size(); i++) {
+            stage("${node_tests[i]}") {
                 def timeout_stop_exc = null
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE', catchInterruptions: false) {
                     stepPrintEnv()
-                    stepReset(tests[i])
-                    stepMake(tests[i])
-                    stepFlash(tests[i])
-                    stepTest(tests[i])
-                    stepArchiveTestResults(tests[i])
+                    stepReset(node_tests[i])
+                    stepUnstashBinaries(node_tests[i])
+                    //s_name = (${env.BOARD} + "_" + node_tests[i]).replace("/", "_")
+                    //echo s_name
+                    //unstash name:
+                    //stepMake(tests[i])
+                    stepFlash(node_tests[i])
+                    stepTest(node_tests[i])
+                    stepArchiveTestResults(node_tests[i])
                 }
             }
         }
     }
 }
 
+def stepUnstashBinaries(test) {
+    unstash name: "${env.BOARD}_${test.replace("/", "_")}"
+}
+
 def stepPrepareNodeWorkingDir()
 {
     deleteDir()
-    unstash name: 'sources'
-    sh 'pwd'
-    sh 'ls -alh'
+    //unstash name: 'sources'
+    sh script: """
+                sh ${GIT_CACHE_PATH}git-cache clone https://github.com/RIOT-OS/RobotFW-tests ${robot_fw_commit_id} .
+                sh ${GIT_CACHE_PATH}git-cache clone https://github.com/RIOT-OS/RIOT ${riot_commit_id} RIOT
+            """, label: "checkout from git cache"
+
 }
 
 def stepDiscoverTests() {
